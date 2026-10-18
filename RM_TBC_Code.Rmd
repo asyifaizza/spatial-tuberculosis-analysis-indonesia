@@ -1,0 +1,673 @@
+---
+title: "RM_TBC"
+author: "Aufa & Asyifa"
+date: "2026-10-13"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# =========================================================
+# 0. PERSIAPAN ANALISIS
+# =========================================================
+# 0.1 Import Library
+```{r}
+library(readxl)     # Membaca file Excel
+library(dplyr)      # Mengolah data
+library(ggplot2)    # Visualisasi data
+library(car)        # Pengujian multikolinearitas (VIF)
+library(MASS)       # Regresi Binomial Negatif
+library(sf)         # Pengolahan data spasial
+library(spdep)      # Matriks pembobot dan pengujian spasial
+library(tmap)       # Visualisasi peta
+library(geodata)    # Mengunduh data batas administrasi wilayah
+library(AER)
+```
+
+# 0.2 Load the Dataset
+```{r}
+# Membaca dataset
+data_tbc <- read_excel("data_tbc_jatim_FINAL.xlsx")
+
+# Melihat struktur data
+str(data_tbc)
+
+# Melihat 6 baris pertama
+head(data_tbc)
+
+# Melihat nama kolom
+names(data_tbc)
+
+# Melihat dimensi dataset
+dim(data_tbc)
+```
+
+# 0.3 Menentukan Variabel Penelitian
+```{r}
+# Menyeragamkan nama kolom
+data_tbc <- data_tbc %>%
+  rename(
+    kabkota = `Kabupaten/Kota`,
+    longitude = Longitude,
+    latitude = Latitude,
+    tbc = `Jumlah Kasus TBC`,
+    penduduk = `Jumlah Penduduk`,
+    miskin = `Jumlah Penduduk Miskin`,
+    faskes = `Jumlah Fasilitas Kesehatan`,
+    pdrb = `Produk Domestik Regional Bruto per Kapita Atas Dasar Harga Berlaku (Ribu Rp)`,
+    sanitasi = `Persentase rumah tangga yang memiliki akses terhadap sanitasi layak`,
+    tpt = `Presentase TPT`,
+    iku = `indeks_kualitas_udara`
+  )
+
+# Menentukan variabel dependen (Y)
+Y <- data_tbc$tbc
+
+# Menentukan variabel independen (X)
+X <- dplyr::select(
+  data_tbc,
+  miskin, faskes, pdrb, sanitasi, tpt, iku
+)
+
+# Menentukan variabel offset
+offset_penduduk <- data_tbc$penduduk
+
+# Menentukan koordinat geografis
+koordinat <- dplyr::select(
+  data_tbc,
+  longitude, latitude
+)
+
+# Memeriksa hasil
+head(data_tbc)
+head(Y)
+head(X)
+head(offset_penduduk)
+head(koordinat)
+```
+# 0.4 Pemekrisaan Akhir
+```{r}
+# Jumlah observasi dan variabel
+cat("Jumlah observasi:", nrow(data_tbc), "\n")
+cat("Jumlah variabel:", ncol(data_tbc), "\n")
+
+# Memeriksa missing value
+colSums(is.na(data_tbc))
+
+# Memeriksa struktur data
+str(data_tbc)
+
+# Statistik deskriptif awal
+summary(data_tbc)
+```
+
+# =========================================================
+# 1. DESKRIPSI VARIABEL
+# =========================================================
+# 1.1 Variabel Dependen (Y)
+```{r}
+# Melihat variabel dependen
+head(Y)
+
+# Memeriksa tipe data
+class(Y)
+
+# Statistik ringkas
+summary(Y)
+
+# Memeriksa jumlah observasi
+length(Y)
+
+# Memeriksa nilai minimum dan maksimum
+cat("Nilai minimum Y:", min(Y, na.rm = TRUE), "\n")
+cat("Nilai maksimum Y:", max(Y, na.rm = TRUE), "\n")
+```
+
+# 1.2 Variabel Independen (X)
+```{r}
+# Melihat data variabel independen
+head(X)
+
+# Memeriksa struktur data
+str(X)
+
+# Statistik deskriptif setiap variabel independen
+summary(X)
+
+# Memeriksa jumlah missing value
+colSums(is.na(X))
+
+# Memeriksa tipe data setiap variabel
+sapply(X, class)
+```
+
+# 1.3 Variabel Offset
+```{r}
+# Melihat data jumlah penduduk
+head(offset_penduduk)
+
+# Statistik deskriptif
+summary(offset_penduduk)
+
+# Memeriksa tipe data
+class(offset_penduduk)
+
+# Memeriksa jumlah missing value
+sum(is.na(offset_penduduk))
+
+# Memeriksa nilai nol dan negatif
+cat("Jumlah penduduk minimum:",
+    min(offset_penduduk, na.rm = TRUE), "\n")
+
+cat("Jumlah penduduk maksimum:",
+    max(offset_penduduk, na.rm = TRUE), "\n")
+
+cat("Jumlah observasi dengan penduduk <= 0:",
+    sum(offset_penduduk <= 0, na.rm = TRUE), "\n")
+
+# Membentuk log offset
+log_offset <- log(offset_penduduk)
+
+# Memeriksa hasil transformasi
+summary(log_offset)
+```
+
+
+# =========================================================
+# 2. ANALISIS DESKRIPTIF
+# =========================================================
+# 2.1 Statistik Deskriptif
+```{r}
+# Membuat tabel statistik deskriptif
+data_numerik <- dplyr::select(
+  data_tbc,
+  where(is.numeric)
+)
+
+statistik_deskriptif <- data.frame(
+  Variabel = names(data_numerik),
+  Mean = sapply(data_numerik, mean, na.rm = TRUE),
+  Median = sapply(data_numerik, median, na.rm = TRUE),
+  Variance = sapply(data_numerik, var, na.rm = TRUE),
+  Std_Deviation = sapply(data_numerik, sd, na.rm = TRUE),
+  Minimum = sapply(data_numerik, min, na.rm = TRUE),
+  Maximum = sapply(data_numerik, max, na.rm = TRUE)
+)
+
+# Menampilkan tabel
+print(statistik_deskriptif)
+```
+
+# 2.2 Visualisasi Distribusi Y
+```{r}
+# Histogram jumlah kasus TBC
+ggplot(data_tbc, aes(x = tbc)) +
+  geom_histogram(
+    bins = 10,
+    color = "black",
+    fill = "steelblue"
+  ) +
+  labs(
+    title = "Distribusi Jumlah Kasus TBC",
+    x = "Jumlah Kasus TBC",
+    y = "Frekuensi"
+  ) +
+  theme_minimal()
+```
+
+# 2.3 Pemeriksaan Awal Karakteristik Poisson
+```{r}
+# Menghitung mean, variance, dan standard deviation
+mean_Y <- mean(Y, na.rm = TRUE)
+variance_Y <- var(Y, na.rm = TRUE)
+sd_Y <- sd(Y, na.rm = TRUE)
+
+# Menghitung rasio variance terhadap mean
+variance_mean_ratio <- variance_Y / mean_Y
+
+# Membuat tabel karakteristik Y
+karakteristik_Y <- data.frame(
+  Mean = mean_Y,
+  Variance = variance_Y,
+  Standard_Deviation = sd_Y,
+  Variance_Mean_Ratio = variance_mean_ratio
+)
+
+# Menampilkan hasil
+print(karakteristik_Y)
+
+# Interpretasi awal berdasarkan mean dan variance
+if (variance_Y > mean_Y) {
+  cat("Variance lebih besar daripada mean.\n")
+  cat("Terdapat indikasi awal overdispersion.\n")
+} else if (variance_Y < mean_Y) {
+  cat("Variance lebih kecil daripada mean.\n")
+  cat("Terdapat indikasi awal underdispersion.\n")
+} else {
+  cat("Variance sama dengan mean.\n")
+  cat("Karakteristik ini konsisten dengan asumsi Poisson.\n")
+}
+```
+
+# 2.4 Peta Persebaran Kasus TBC
+```{r}
+# Mengunduh batas administrasi Indonesia
+peta_indonesia <- geodata::gadm(
+  country = "IDN",
+  level = 2,
+  path = "data_spasial"
+)
+
+# Mengubah menjadi objek sf
+peta_indonesia <- sf::st_as_sf(peta_indonesia)
+
+# Memeriksa nama provinsi yang tersedia
+unique(peta_indonesia$NAME_1)
+
+# Mengambil kabupaten/kota di Jawa Timur
+peta_jatim <- peta_indonesia %>%
+  dplyr::filter(NAME_1 == "Jawa Timur")
+
+# Memeriksa wilayah yang diperoleh
+print(peta_jatim$NAME_2)
+
+# Memeriksa jumlah wilayah
+nrow(peta_jatim)
+
+# Membuat fungsi untuk menyeragamkan nama wilayah
+normalisasi_nama <- function(x) {
+  x <- tolower(x)
+
+  x <- gsub("^kabupaten\\s+", "", x)
+  x <- gsub("^kota\\s+", "", x)
+
+  x <- gsub("[[:punct:]]", " ", x)
+  x <- gsub("\\s+", " ", x)
+
+  trimws(x)
+}
+
+# Menambahkan kolom nama standar pada data penelitian
+data_tbc <- data_tbc %>%
+  dplyr::mutate(
+    nama_join = normalisasi_nama(kabkota)
+  )
+
+# Menambahkan kolom nama standar pada peta
+peta_jatim <- peta_jatim %>%
+  dplyr::mutate(
+    nama_join = normalisasi_nama(NAME_2)
+  )
+
+# Memeriksa nama wilayah yang tidak cocok
+setdiff(data_tbc$nama_join, peta_jatim$nama_join)
+
+setdiff(peta_jatim$nama_join, data_tbc$nama_join)
+
+# Menggabungkan data kasus TBC dengan batas administrasi
+peta_tbc <- peta_jatim %>%
+  dplyr::left_join(
+    data_tbc %>%
+      dplyr::select(nama_join, kabkota, tbc),
+    by = "nama_join"
+  )
+
+# Memastikan tidak ada kasus TBC yang hilang
+sum(is.na(peta_tbc$tbc))
+
+# Membuat peta choropleth jumlah kasus TBC
+ggplot() +
+  geom_sf(
+    data = peta_tbc,
+    aes(fill = tbc),
+    color = "white",
+    linewidth = 0.35
+  ) +
+  scale_fill_gradient(
+    low = "#FEE5D9",
+    high = "#A50F15",
+    name = "Jumlah Kasus TBC",
+    na.value = "grey85",
+    labels = scales::label_number(big.mark = ".")
+  ) +
+  coord_sf(
+    crs = sf::st_crs(4326),
+    datum = sf::st_crs(4326)
+  ) +
+  labs(
+    title = "Peta Persebaran Jumlah Kasus TBC",
+    subtitle = "Kabupaten/Kota di Provinsi Jawa Timur",
+    x = "Longitude",
+    y = "Latitude",
+    caption = "Sumber: Data penelitian dan batas administrasi GADM"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(
+      size = 16,
+      face = "bold"
+    ),
+    plot.subtitle = element_text(size = 11),
+    axis.title = element_text(size = 11),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    panel.grid.major = element_line(
+      color = "grey90",
+      linewidth = 0.3
+    ),
+    panel.background = element_rect(
+      fill = "white",
+      color = NA
+    ),
+    plot.background = element_rect(
+      fill = "white",
+      color = NA
+    )
+  )
+```
+
+
+# =========================================================
+# 3. PENGUJIAN MULTIKOLINEARITAS
+# =========================================================
+# 3.1 Menghitung VIF
+```{r}
+# Membentuk dataset untuk pengujian VIF
+data_vif <- data.frame(
+  tbc = data_tbc$tbc,
+  miskin = data_tbc$miskin,
+  faskes = data_tbc$faskes,
+  pdrb = data_tbc$pdrb,
+  sanitasi = data_tbc$sanitasi,
+  tpt = data_tbc$tpt,
+  iku = data_tbc$iku
+)
+
+# Membentuk model regresi linear sebagai model bantu
+model_vif <- lm(
+  tbc ~ miskin + faskes + pdrb + sanitasi + tpt + iku,
+  data = data_vif
+)
+
+# Menghitung VIF
+hasil_vif <- car::vif(model_vif)
+
+# Menampilkan hasil
+print(hasil_vif)
+```
+
+# 3.2 Interpretasi Hasil VIF
+```{r}
+tabel_vif <- data.frame(
+  Variabel = names(hasil_vif),
+  VIF = as.numeric(hasil_vif)
+)
+
+tabel_vif$Interpretasi <- ifelse(
+  tabel_vif$VIF < 5,
+  "Tidak ada indikasi multikolinearitas kuat",
+  "Perlu pemeriksaan lebih lanjut"
+)
+
+print(tabel_vif)
+```
+
+# =========================================================
+# 4. PEMODELAN REGRESI POISSON
+# =========================================================
+# 4.1 Estimasi Parameter
+```{r}
+# Membentuk model regresi Poisson
+model_poisson <- glm(
+  tbc ~ miskin + faskes + pdrb + sanitasi + tpt +
+    offset(log(penduduk)),
+  family = poisson(link = "log"),
+  data = data_tbc
+)
+
+# Menampilkan hasil estimasi model
+summary(model_poisson)
+
+# Koefisien regresi Poisson
+coef(model_poisson)
+
+# Menghitung IRR
+IRR_poisson <- exp(coef(model_poisson))
+
+# Menampilkan IRR
+print(IRR_poisson)
+```
+
+# 4.2 Pengujian Overdispersi
+H₀: Tidak terdapat overdispersi, sehingga parameter dispersi sama dengan nol (equidispersion).
+H₁: Terdapat overdispersi, sehingga parameter dispersi lebih besar dari nol.
+#3 4.2.1 Uji Menggunakan dispersiontest()
+```{r}
+# Melakukan uji overdispersi
+hasil_dispersion <- AER::dispersiontest(model_poisson)
+
+print(hasil_dispersion)
+```
+## 4.2.2 Uji Overdispersi Secara Manual menurut Cameron dan Trivedi
+```{r}
+# 1. Menghitung nilai prediksi dan respons aktual
+mu_hat <- fitted(model_poisson)
+
+Y_actual <- model.response(
+  model.frame(model_poisson)
+)
+
+# 2. Membentuk variabel bantu Cameron-Trivedi
+Z <- ((Y_actual - mu_hat)^2 - Y_actual) / mu_hat
+
+# 3. Regresi tambahan tanpa intersep
+model_disp <- lm(
+  Z ~ 0 + mu_hat
+)
+
+# 4. Melihat hasil regresi tambahan
+summary(model_disp)
+
+# 5. Mengambil koefisien, standard error, dan p-value
+hasil <- summary(model_disp)$coefficients
+
+alpha_hat <- hasil[1, 1]
+std_error <- hasil[1, 2]
+t_statistic <- hasil[1, 3]
+p_value_dua_arah <- hasil[1, 4]
+
+# 6. Menghitung p-value satu arah untuk H1: alpha > 0
+p_value <- pt(
+  t_statistic,
+  df = df.residual(model_disp),
+  lower.tail = FALSE
+)
+
+# 7. Menampilkan hasil
+cat("Koefisien dispersi :", alpha_hat, "\n")
+cat("Standard error     :", std_error, "\n")
+cat("t-statistic        :", t_statistic, "\n")
+cat("P-value satu arah  :", p_value, "\n")
+
+# 8. Kesimpulan pada alpha = 5%
+alpha <- 0.05
+
+if (p_value < alpha && alpha_hat > 0) {
+  cat("Kesimpulan: Terdapat bukti overdispersi.\n")
+} else {
+  cat("Kesimpulan: Belum terdapat bukti yang cukup untuk menyimpulkan overdispersi.\n")
+}
+```
+
+# 4.3 Evaluasi Kelayakan Model Poisson
+```{r}
+# Residual deviance dan derajat bebas
+cat("Residual Deviance :", deviance(model_poisson), "\n")
+cat("Residual DF       :", df.residual(model_poisson), "\n")
+
+# AIC model Poisson
+cat("AIC Model Poisson :", AIC(model_poisson), "\n")
+```
+H0: seluruh koefisien variabel independen sama dengan nol.
+H1: setidaknya ada satu koefisien variabel independen yang tidak sama dengan nol.
+```{r}
+# Membentuk model nol dengan offset
+model_poisson_null <- glm(
+  tbc ~ 1 + offset(log(penduduk)),
+  family = poisson(link = "log"),
+  data = data_tbc
+)
+
+# Uji perbandingan likelihood ratio
+anova(
+  model_poisson_null,
+  model_poisson,
+  test = "Chisq"
+)
+```
+
+# =========================================================
+# 5. PEMODELAN REGRESI BINOMIAL NEGATIF
+# =========================================================
+# 5.1 Estimasi Parameter
+```{r}
+#data_tbc$lpdrb    <- log(data_tbc$pdrb)
+#data_tbc$lfaskes    <- log(data_tbc$faskes)
+#data_tbc$lsanitasi    <- log(data_tbc$sanitasi)
+
+
+model_nb <- MASS::glm.nb(
+  tbc ~ miskin + faskes + sanitasi + tpt + iku + pdrb +
+    offset(log(penduduk)),
+  data = data_tbc
+)
+
+# Melihat ringkasan model
+summary(model_nb)
+
+# Melihat nilai AIC
+AIC(model_nb)
+```
+
+# 5.2 Uji Signifikansi Simultan
+H0: b1 = b2 = b3 = b4 = b5
+H1: minimal terdapat satu bj != 0
+```{r}
+# Model tanpa variabel independen, tetapi tetap menggunakan offset
+model_nb_null <- MASS::glm.nb(
+  tbc ~ 1 + offset(log(penduduk)),
+  data = data_tbc
+)
+
+# Likelihood Ratio Test
+uji_simultan <- anova(
+  model_nb_null,
+  model_nb,
+  test = "Chisq"
+)
+
+print(uji_simultan)
+```
+
+# 5.3 Uji Signifikansi Parsial
+H0 = bj = 0
+H1 = bj != 0
+```{r}
+hasil_nb <- summary(model_nb)$coefficients
+
+tabel_uji_parsial <- data.frame(
+  Variabel = rownames(hasil_nb),
+  Koefisien = hasil_nb[, "Estimate"],
+  Std_Error = hasil_nb[, "Std. Error"],
+  Statistik_z = hasil_nb[, "z value"],
+  P_Value = hasil_nb[, "Pr(>|z|)"]
+)
+
+print(tabel_uji_parsial)
+```
+
+# 5.4 Interpretasi Koefisien
+```{r}
+# Menghitung IRR
+irr_nb <- exp(coef(model_nb))
+
+# Membuat tabel koefisien dan IRR
+tabel_irr <- data.frame(
+  Variabel = names(coef(model_nb)),
+  Koefisien = coef(model_nb),
+  IRR = irr_nb
+)
+
+print(tabel_irr)
+```
+
+# =========================================================
+# 6. PENGUJIAN SPASIAL
+# =========================================================
+# 6.1 Menentukan Matriks Pembobot Spasial
+```{r}
+# Mengambil koordinat wilayah
+koordinat <- as.matrix(
+  data_tbc[, c("longitude", "latitude")]
+)
+
+# Menentukan 3 tetangga terdekat
+knn_3 <- spdep::knearneigh(
+  koordinat,
+  k = 3
+)
+
+# Mengubah hasil KNN menjadi daftar tetangga
+nb_knn3 <- spdep::knn2nb(knn_3)
+
+# Membentuk matriks pembobot spasial
+bobot_knn3 <- spdep::nb2listw(
+  nb_knn3,
+  style = "W"
+)
+
+# Melihat daftar tetangga setiap wilayah
+print(nb_knn3)
+
+# Melihat matriks pembobot spasial
+print(bobot_knn3)
+```
+
+# 6.2 Pengujian Heterogenitas Spasial
+H0: varians residual model bantu konstan (homoskedastisitas).
+H1: varians residual model bantu tidak konstan (heteroskedastisitas).
+```{r}
+# Melakukan uji Breusch-Pagan
+uji_bp <- bptest(model_nb)
+
+print(uji_bp)
+```
+
+# 6.3 Pengujian Dependensi Spasial
+H0: tidak terdapat autokorelasi spasial pada residual model binomial negatif.
+H1: terdapat autokorelasi spasial pada residual model binomial negatif.
+```{r}
+moran.test(data_tbc$tbc, bobot_knn3, alternative = "two.sided")
+
+# Mengambil residual Pearson model binomial negatif
+residual_nb <- residuals(
+  model_nb,
+  type = "pearson"
+)
+
+# Uji Moran's I
+uji_moran_nb <- spdep::moran.mc(
+  residual_nb,
+  listw = bobot_knn3,
+  nsim = 9999,
+  alternative = "two.sided"
+)
+
+# Menampilkan hasil pengujian
+print(uji_moran_nb)
+```
